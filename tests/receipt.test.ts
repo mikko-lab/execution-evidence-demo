@@ -1,4 +1,5 @@
-import { generateKeyPairSync, randomUUID, verify } from 'node:crypto';
+import { createPublicKey, generateKeyPairSync, randomUUID, verify } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import canonicalize from 'canonicalize';
 import {
   createExecutionReceipt, signExecutionReceipt, verifyExecutionReceipt, verifyExecutionTransition,
@@ -21,6 +22,25 @@ function errorCode(fn: () => unknown, code: EvidenceErrorCode) {
 }
 
 describe('signed execution receipts', () => {
+  test('verifies the fixed externally signed v1 compatibility vector', () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL('./fixtures/execution-receipt-v1.json', import.meta.url), 'utf8',
+    ));
+    const publicKey = createPublicKey(fixture.public_key_pem);
+    const { value, ...metadata } = fixture.receipt.signature;
+    const unsigned = { ...fixture.receipt, signature: metadata };
+    expect(canonicalize(unsigned)).toBe(fixture.canonical_unsigned_receipt);
+    expect(verify(null, Buffer.from(fixture.canonical_unsigned_receipt, 'utf8'),
+      publicKey, Buffer.from(value, 'base64'))).toBe(true);
+    const trusted = { keyId: 'reference-vector-1', publicKey };
+    expect(verifyExecutionReceipt(fixture.receipt, trusted)).toBe(true);
+    expect(verifyExecutionTransition(
+      fixture.receipt, fixture.before, fixture.after, fixture.result, trusted,
+    )).toBe(true);
+    errorCode(() => verifyExecutionTransition(
+      fixture.receipt, fixture.before, { counter: 2 }, fixture.result, trusted,
+    ), 'AFTER_STATE_MISMATCH');
+  });
   test('valid signature survives JSON transport and binds independently reconstructed payload', () => {
     const r = receipt();
     expect(verifyExecutionReceipt(JSON.parse(JSON.stringify(r)), authority)).toBe(true);
