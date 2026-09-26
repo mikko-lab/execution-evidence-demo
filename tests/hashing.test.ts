@@ -29,7 +29,9 @@ describe('canonical SHA-256 hashing', () => {
     ['lone surrogate', '\uD800'], ['symbol key', { [Symbol('a')]: 1 }],
   ])('rejects %s instead of silently coercing it', (_name, value) => {
     expect(() => hashState(value)).toThrow(EvidenceError);
-    try { hashResult(value); } catch (error) { expect(error).toMatchObject({ code: 'INVALID_JSON' }); }
+    expect(() => hashResult(value)).toThrow(
+      expect.objectContaining({ name: 'EvidenceError', code: 'INVALID_JSON' }),
+    );
   });
   test('rejects cycles but permits shared acyclic references', () => {
     const cycle: { self?: unknown } = {}; cycle.self = cycle;
