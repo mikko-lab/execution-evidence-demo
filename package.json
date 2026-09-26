@@ -1,0 +1,29 @@
+{
+  "name": "execution-evidence-demo",
+  "version": "0.1.0",
+  "description": "A reference implementation for verifiable execution evidence.",
+  "private": true,
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "verify": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "canonicalize": "5.1.0"
+  },
+  "devDependencies": {
+    "@types/jest": "30.0.0",
+    "@types/node": "22.20.4",
+    "jest": "30.5.2",
+    "ts-jest": "29.4.14",
+    "typescript": "5.9.3"
+  },
+  "type": "module"
+}
