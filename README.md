@@ -33,6 +33,12 @@ corresponding warning. The library itself uses standard Node crypto APIs.
 Dependencies are pinned in the lockfile. `private: true` prevents accidental npm
 publication; the repository and its Apache-2.0 source remain public.
 
+## Continuous integration
+
+GitHub Actions runs `npm ci` and `npm run verify` on Node.js 22 and 24 for
+pull requests and pushes to `main`. The workflow has read-only repository
+permissions and pins its actions to immutable commit SHAs.
+
 ## Example
 
 After `npm run build`, run this as an ES module from the repository root:
