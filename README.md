@@ -39,6 +39,13 @@ GitHub Actions runs `npm ci` and `npm run verify` on Node.js 22 and 24 for
 pull requests and pushes to `main`. The workflow has read-only repository
 permissions and pins its actions to immutable commit SHAs.
 
+## Dependency maintenance
+
+Dependabot checks npm packages and GitHub Actions weekly on Mondays. Version
+update pull requests are limited to three for npm and two for Actions. Updates
+follow the same pull-request and CI requirements as other changes; automatic
+merging is not enabled.
+
 ## Example
 
 After `npm run build`, run this as an ES module from the repository root:
