@@ -178,214 +178,265 @@ mismatches, detached copies, and explicit replay behavior.
 
 Licensed under [Apache-2.0](LICENSE).
 
-## v0.2: execution lifecycle and uncertain outcomes
+## Unreleased v0.2: append-only execution observations
 
-**Dispatched is not confirmed.**
+This branch revises the earlier **unreleased** lifecycle draft incompatibly.
+The earlier `confirmed`, `ExecutionReconciliationV1`, `retryPolicy`,
+`evaluateRetryDisposition`, and `signRetryDispatch` APIs are removed. Do not mix
+artifacts from the two drafts. No released lifecycle compatibility is claimed.
+Package version remains 0.1.0 until a separately reviewed release; artifact
+`version: 1` identifies each new schema, not the package version.
 
-**Indeterminate is neither success nor failure.**
+`ExecutionReceiptV1`, its APIs, error semantics, canonical bytes, and fixed
+external compatibility vector remain unchanged. Missing observations are not
+represented by nullable hashes or by hashing JSON null as an unknown sentinel.
 
-v0.1 remains signed evidence of an observed completed execution transition.
-v0.2 adds evidence for the interval after dispatch when the final external effect
-may still be uncertain. `ExecutionReceiptV1`, its canonical bytes, signatures,
-and external compatibility vector are unchanged. Artifact `version: 1` means
-version one of each new artifact schema; it does not change the package version.
+### Three separate responsibilities
 
-| Status | Meaning and required basis |
+```text
+verifyEvidence / verifyExecutionHistory
+    authenticate artifacts and check supplied references/structure
+                    ↓
+assessHistory
+    project knowledge from authenticated observations
+                    ↓
+authorizeNextAction — external runtime/orchestration responsibility
+```
+
+This library has no retry policy or operational authorization API. A retry that
+was unsafe or unauthorized can still be recorded as authentic evidence of what
+was observed. Verification must not depend on whether the verifier would allow
+that action now. Applications must inspect assessment results; successful
+structural verification alone does not exclude conflicting outcomes.
+
+### Operation, execution and attempt identity
+
+`OperationDescriptorV1` contains exactly:
+
+```ts
+{
+  kind: 'execution_operation', version: 1,
+  actor: { type: 'agent' | 'service' | 'human', id: string },
+  action: { type: string, target: string },
+  payload: /* a strictly JSON-compatible value */,
+  executor: { id: string, scope: string }
+}
+```
+
+`hashOperation` computes SHA-256 over the complete descriptor's JCS UTF-8 bytes,
+including `kind` and `version`. Payload, actor, action, target, executor and scope
+are all committed. The caller must define a scope that distinguishes the relevant
+account/tenant/resource domain and include every execution-relevant argument in
+payload. A digest does not hide guessable sensitive data.
+
+- `execution_id`: UUID v4 for one intended logical executor operation.
+- `request_id`: the stable originating request identity in this evidence history.
+- `attempt_id`: UUID v4 for one delivery attempt of that operation.
+- `event_id`: UUID v4 for one observation, not a delivery attempt.
+
+A retry keeps execution ID, request ID, operation hash and optional idempotency
+key; it gets a new attempt ID. Every observation of a retry attempt carries the
+same `retry_of_attempt_id`, identifying its preceding attempt. The retry must
+have evidence of that preceding attempt in its hash ancestry. New unlinked
+attempts and changed attempt metadata fail closed. Multiple observations of the
+same submission can share an attempt ID; the library does not observe the network
+and cannot detect a caller hiding a new submission under an old ID.
+
+The v0.1 execution ID is associated with the logical operation by the binding
+profile below. Retransmission does not itself establish another actual effect.
+These identifiers neither prove uniqueness of effects nor prevent duplicates.
+
+`VerificationContext.operation` supplies the expected descriptor independently
+of evidence. All events must match its hash. A different operation hash under the
+same execution/request IDs throws `OPERATION_MISMATCH`, not a successful ordinary
+projection. Preserve rejected material separately for investigation.
+
+### Binding an unchanged v0.1 receipt
+
+V0.1 does not sign payload, executor scope, or attempt ID. Matching its execution
+and request IDs cannot establish those missing associations. A new, separate
+`ExecutionReceiptBindingV1` therefore signs:
+
+- execution ID, request ID, attempt ID and operation hash;
+- `execution_receipt_hash`, over the complete signed v0.1 receipt;
+- `receipt_issuer`, plus the binding issuer, timestamp and binding ID.
+
+The binding issuer must be externally trusted for `receipt_binding`. It is
+responsible for actually correlating the descriptor and delivery attempt to the
+receipt. It may be an executor or an adapter with trustworthy observations; the
+library does not collect those observations or contact a provider.
+
+Verification independently checks the binding signature, descriptor hash,
+receipt signature under a separately configured `receipt` role, both receipt IDs,
+and exact receipt actor/action equality with the descriptor. The binding's signed
+hash attests the remaining payload/scope/attempt association. **It does not make
+the old receipt's signer attest fields absent from v0.1**, and a dishonest trusted
+binding authority can still lie about that association.
+
+An outcome event signs the hash of the complete signed binding. Binding and event
+must agree on operation, execution, request and attempt. Merely supplying a hash,
+a local success flag, an acknowledgement, an accepted/queued response or HTTP
+success cannot satisfy this verification path. Adapters must not turn such
+responses into final-outcome evidence without a justified observation contract.
+
+`context.receipts` and `context.receiptBindings` are untrusted candidates, never
+sources of trust configuration. Referenced artifacts are checked independently.
+Issuer/key pairs must match exactly one `trustedIssuers` entry with the required
+role (`lifecycle`, `receipt_binding`, or `receipt`). Configure these authorities
+for the expected operation's executor and scope. Evidence cannot grant itself a
+role or supply a trusted public key.
+
+### Observations and knowledge projection
+
+| Signed observation | Basis / meaning |
 | --- | --- |
-| `dispatched` | The signer observed submission across the execution boundary (`submitted`); no authoritative final outcome is established. |
-| `confirmed` | A trusted signed receipt binds the same execution and request and establishes a known observed result (`verified_receipt`). This does not mean business success. |
-| `indeterminate` | There is evidence that the operation may have executed, but its final effect is unresolved: `timeout_after_dispatch`, `transport_after_dispatch`, `acknowledgement_lost`, or `unresolved_provider_effect`. |
-| `unknown` | There is insufficient trustworthy evidence to classify the execution as confirmed or indeterminate (`insufficient_trustworthy_evidence`). This is not a generic exception category. |
+| `unknown` | `insufficient_trustworthy_evidence`: the observer cannot classify the associated operation |
+| `dispatched` | `submitted`: submission across the defined execution boundary was observed; delivery/acceptance/commit is not implied |
+| `indeterminate` | `timeout_after_possible_dispatch`, `connection_lost`, `acknowledgement_lost`, `partial_effect_unresolved`, or `unresolved_provider_effect` |
+| `outcome_observed` | `verified_receipt_binding`: a trusted, operation-bound receipt attests an observed outcome, including a possible application-level rejection |
 
-Use indeterminate when a dispatched operation may have committed, including a
-lost acknowledgement or a provider that cannot establish its final effect.
-Use unknown only when the available evidence cannot support even that assessment,
-for example an observation whose association with the downstream operation cannot
-be established. A later unknown observation does not erase an earlier signed
-submission. Local exceptions before dispatch do not automatically produce any of
-these events. The library does not infer outcomes from exceptions or execute work.
+Events are immutable signed observations, not commands to change an execution
+status. Signing returns detached data; returned objects remain mutable and later
+changes invalidate verification. No event deletes or supersedes another.
 
-### Evidence and transition contract
+A root may be unknown, dispatched, indeterminate or outcome-observed; missing
+history is not invented to create an apparent full lifecycle. `not_dispatched`,
+queued work and pre-dispatch scheduling are outside this minimal artifact model.
+Absence of dispatch evidence never proves that nothing was sent.
 
-`ExecutionLifecycleEventV1` includes `kind: "execution_lifecycle"`, `version: 1`,
-UUID-v4 `event_id` and `execution_id`, `request_id`, `status`, `basis`, `observed_at`,
-`issuer`, and `signature: { algorithm: "Ed25519", key_id, value }`.
-Optional `provider_reference` and `idempotency_key` are signed nonempty strings.
-`observed_at` uses the same strict UTC millisecond format as v0.1. Unknown fields
-are rejected. Creation/signing returns detached data; later mutations invalidate
-verification rather than updating a persisted status.
+`previous_event_hash` commits to the complete signed predecessor using SHA-256/JCS.
+The supplied graph may fork and input array order is irrelevant. All referenced
+predecessors must be present, IDs must be unique within the supplied graph, and
+execution/operation/attempt bindings must be consistent. Separate roots may
+observe the same initial attempt; additional attempts must identify their retry
+ancestry. There is no sequence number or global linear order in this profile.
 
-The first observation may be dispatched, indeterminate, or unknown. It has no
-predecessor. Allowing an unresolved first observation accommodates partial local
-knowledge; it does not assert a complete execution history. Subsequent artifacts
-must include `previous_event_hash`: SHA-256 over JCS UTF-8 bytes of the **complete
-signed predecessor**, including its signature. Their execution ID, request ID,
-and optional idempotency key must match exactly, observation time cannot decrease,
-and event/reconciliation IDs cannot repeat within the supplied history.
+`observed_at` is a strict UTC millisecond timestamp asserted by the observer.
+It is not trusted time and does not order the graph. Older observations arriving
+later are accepted, including after outcome evidence. Hash links describe evidence
+references, not physical causality. Conflicting event times do not select a winner.
 
-| Predecessor | Allowed appended evidence |
+Assessment accumulates knowledge:
+
+```text
+unknown → dispatched → indeterminate → outcome_observed
+    └───────────────────────────────────────────↑
+                       incompatible outcomes → conflict
+```
+
+These are projection refinements, not restrictions on which observations may be
+appended. Unknown cannot erase dispatch; timeout cannot erase an observed outcome.
+Repeated uncertain observations and further observations after an outcome are
+recordable. Reconciliation is evidence collection by the application followed by
+an ordinary bound outcome observation, not a special override permission.
+
+Two outcome receipts conflict when their signed before/after/result hash tuples
+differ for the logical operation, including across attempts. Receipt re-signing,
+issuer changes or timestamps alone do not constitute outcome disagreement.
+Conflicts are conservative: the library does not interpret result JSON, partial
+steps, compensation or domain equivalence. Contradictory evidence is preserved,
+structural verification succeeds, and assessment returns `conflict`. The returned
+conflicting event IDs identify all outcome observations involved in that disagreeing
+set. No timestamp or later supporting event erases the conflict.
+
+`assessHistory` also returns per-attempt states, supplied graph heads and outcome
+receipt hashes. Overall `outcome_observed` means an outcome has been observed for
+the logical operation, **not that every attempt has settled**. Inspect the attempt
+states for outstanding deliveries; this projection never authorizes another action.
+It neither proves business success nor absence of duplicate effects.
+
+Invalid signatures and malformed/incorrectly bound artifacts throw. Missing
+predecessors throw the distinct `MISSING_PREDECESSOR` error; authentication of all
+supplied events happens first, so a forged event cannot masquerade as incomplete
+history. No missing/invalid input is converted to signed `unknown` or permission.
+
+### API and example
+
+| API | Contract |
 | --- | --- |
-| dispatched | Lifecycle confirmed, indeterminate, or unknown; or authoritative reconciliation to confirmed |
-| indeterminate | Authoritative reconciliation to confirmed |
-| unknown | Authoritative reconciliation to confirmed |
-| confirmed | Terminal; no further classification is accepted in that history |
+| `hashOperation(descriptor)` | Strict descriptor validation and domain-separated SHA-256/JCS commitment |
+| `signExecutionLifecycleEvent(draft, key, history, context)` | Sign and structurally verify an append, including contradictory observations |
+| `signExecutionReceiptBinding(draft, key, context)` | Sign and verify a receipt-to-operation association under the binding role |
+| `verifyEvidence(artifact, context)` | Verify one artifact, expected operation, signature and outcome references; does not resolve an event's predecessor |
+| `verifyExecutionHistory(history, context)` | Verify every event and the supplied graph's linkage and identities; forks and conflicting outcomes are permitted |
+| `assessHistory(history, context)` | Verify the graph, then return knowledge projection and conflict information |
+| `hashLifecycleEvidence(event)` / `hashReceiptBinding(binding)` | Validate shape and hash the complete signed artifact; not authentication |
+| `hashExecutionReceipt(receipt)` | Hash the complete JSON receipt; not schema validation or authentication |
 
-One explicit exception permits dispatched or indeterminate → dispatched when a
-matching verifier policy declares the operation side-effect-free. That event
-requires `retry_of` equal to `previous_event_hash`. Ordinary repeated dispatches
-and idempotency-based optimistic retries are rejected.
-
-Verification requires the entire supplied linear history. Passing only a linked
-last event, skipping predecessors, reordering events, or replacing an uncertain
-observation with a regular confirmed event fails. Conflicting branches are not
-merged or automatically resolved. Preserve later contradictory material separately
-for investigation; this minimal version rejects appends after confirmation and
-has no conflict-resolution artifact. Links alone cannot detect a withheld branch,
-missing later events, replay, or an attacker presenting an older valid prefix.
-The application must retain evidence and establish its expected current head.
-
-### Confirmation, reconciliation, and trust domains
-
-Every confirmed artifact signs `execution_receipt_hash` and `receipt_issuer`.
-The hash covers the **complete signed ExecutionReceiptV1**, including its signature.
-The verifier requires the referenced receipt, its valid v0.1 signature under a
-configured receipt authority, and exact `execution_id` and `request_id` agreement.
-The receipt's asserted execution time must not follow the observation time.
-A matching hash or a signed `status: "confirmed"` alone is insufficient.
-Observation hashes are retained in the receipt; to also check actual before/after/
-result values, use the unchanged `verifyExecutionTransition` API.
-
-`ExecutionReconciliationV1` has `kind: "execution_reconciliation"`, a UUID-v4
-`reconciliation_id`, the shared metadata and identity, `previous_event_hash`, and
-the confirmed classification with its receipt hash and issuer. The receipt hash
-is the authoritative evidence reference. This minimal reconciliation model only
-resolves an unresolved history to confirmed. If a status query cannot establish
-the effect, keep the history unresolved; it cannot produce a reconciliation here.
-Reconciliation requires authoritative downstream evidence represented by a trusted
-v0.1 receipt, not an arbitrary operator instruction to mark the action confirmed.
-The new artifact appends to the existing history and never edits old signatures.
-
-`VerificationContext.trustedIssuers` is **external trusted configuration**. Each
-entry provides `issuer_id`, `key_id`, an Ed25519 public `KeyObject`, and explicit
-roles: `lifecycle`, `reconciliation`, and/or `receipt`. Exactly one entry must
-match the asserted issuer/key pair, with permission for the evidence role.
-A signer may be configured for multiple roles, but roles are never inferred.
-Unknown issuers, ambiguous entries, wrong keys, and disallowed roles fail closed.
-The signer uses a private key; the verifier independently chooses trusted public
-keys. Evidence cannot embed a key or grant itself a role. Because v0.1 has no
-issuer field, `receipt_issuer` selects an externally configured receipt authority;
-the v0.1 key ID and signature must still verify under that authority.
-
-All new signature payloads are JCS-canonicalized full artifacts with only
-`signature.value` removed. The signed `kind` distinguishes the artifact domains.
-Every security-relevant field, including linkage, issuer, key ID, basis, optional
-metadata and confirmation reference, is covered. Strict JSON validation and
-Ed25519 key/signature requirements match the v0.1 primitives. No network lookup,
-key discovery, or external integration occurs.
-
-### Retry and idempotency
-
-`evaluateRetryDisposition(history, context)` returns:
-
-- `do_not_retry` for verified confirmed history, regardless of whether its known
-  result was favorable. Inspect the verified result separately.
-- `reconciliation_required` for missing, malformed, untrusted or unresolved
-  evidence by default. Unknown always requires reconciliation.
-- `safe_to_retry` only for verified dispatched/indeterminate history with an
-  explicit `context.retryPolicy` containing `side_effect_free: true` and exactly
-  matching execution, request and optional idempotency identity.
-
-The exception is a trusted application assertion about the operation, not evidence
-that a provider deduplicates requests. Incorrect policy configuration can make
-retry unsafe. Do not set it for side-effecting operations. There is deliberately
-no automatic safe-retry path for an uncertain side-effecting operation.
-
-`signRetryDispatch` records a retry **after it has been submitted**, preserving
-execution ID, request ID and the optional idempotency key and assigning a fresh
-event ID. It does not perform the submission. Evaluate disposition before deciding
-to submit, retain the same identity, then record the observation. Regular and retry
-appends cannot silently switch that identity. The library cannot stop a caller
-from starting an unrelated history or sending a separate external request.
-
-Idempotency metadata is signed; tampering invalidates the signature. Actual
-idempotency depends on the downstream executor honoring the key with suitable
-scope and retention. Local metadata does not prevent duplicate external effects,
-and v0.1 receipts do not independently attest provider idempotency behavior.
-
-### Lifecycle API example
-
-Run after `npm run build` as an ES module from the repository root:
+Run after `npm run build` as an ES module:
 
 ```js
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import {
-  signExecutionLifecycleEvent, hashLifecycleEvidence,
-  evaluateRetryDisposition, verifyExecutionHistory,
+  hashOperation, hashLifecycleEvidence, signExecutionLifecycleEvent,
+  verifyExecutionHistory, assessHistory,
 } from './dist/src/index.js';
 
 const keys = generateKeyPairSync('ed25519');
-const context = { trustedIssuers: [{
-  issuer_id: 'operation-observer', key_id: 'observer-1',
+const operation = {
+  kind: 'execution_operation', version: 1,
+  actor: { type: 'service', id: 'worker' },
+  action: { type: 'update', target: 'record-1' },
+  payload: { revision: 1 }, executor: { id: 'record-api', scope: 'account-1' },
+};
+const context = { operation, trustedIssuers: [{
+  issuer_id: 'observer', key_id: 'observer-1',
   public_key: keys.publicKey, roles: ['lifecycle'],
 }] };
 const metadata = {
   kind: 'execution_lifecycle', version: 1,
-  execution_id: randomUUID(), request_id: 'request-1',
-  idempotency_key: 'stable-operation-1', issuer: 'operation-observer',
+  execution_id: randomUUID(), request_id: 'request-1', attempt_id: randomUUID(),
+  operation_hash: hashOperation(operation), issuer: 'observer',
   signature: { algorithm: 'Ed25519', key_id: 'observer-1' },
 };
-// Record submission already observed at the execution boundary.
 const dispatched = signExecutionLifecycleEvent({ ...metadata,
   event_id: randomUUID(), status: 'dispatched', basis: 'submitted',
   observed_at: '2026-09-27T12:00:00.000Z',
 }, keys.privateKey, [], context);
-// A timeout after submission leaves the final external effect uncertain.
-const indeterminate = signExecutionLifecycleEvent({ ...metadata,
-  event_id: randomUUID(), status: 'indeterminate', basis: 'timeout_after_dispatch',
+const unresolved = signExecutionLifecycleEvent({ ...metadata,
+  event_id: randomUUID(), status: 'indeterminate', basis: 'timeout_after_possible_dispatch',
   observed_at: '2026-09-27T12:00:30.000Z',
   previous_event_hash: hashLifecycleEvidence(dispatched),
 }, keys.privateKey, [dispatched], context);
-const history = [dispatched, indeterminate];
-verifyExecutionHistory(history, context); // true; this does NOT claim completion
-console.log(evaluateRetryDisposition(history, context)); // reconciliation_required
+const history = [dispatched, unresolved];
+verifyExecutionHistory(history, context);
+console.log(assessHistory(history, context).state); // indeterminate
+// The application decides reconciliation/retry under its own authority and delivery contract.
 ```
 
-| API | Contract |
-| --- | --- |
-| `signExecutionLifecycleEvent(draft, privateKey, history, context)` | Validate, sign, and verify the proposed append; confirmation needs receipt evidence |
-| `signExecutionReconciliation(draft, privateKey, history, context)` | Sign and verify a receipt-backed reconciliation under an authorized reconciler |
-| `verifyExecutionHistory(history, context)` | Verify schemas, signatures, every link, transitions, identity, and referenced receipts; return `true` or throw |
-| `hashLifecycleEvidence(signedEvidence)` | Validate shape and hash the complete signed artifact; does not authenticate it |
-| `hashExecutionReceipt(receipt)` | Hash the complete JSON receipt; does not validate its schema or authenticity |
-| `evaluateRetryDisposition(history, context)` | Conservative retry decision; verification errors become reconciliation_required |
-| `signRetryDispatch(history, observation, privateKey, context)` | Record a policy-justified retry with preserved identity and predecessor linkage |
+New APIs throw `LifecycleError`: `MALFORMED_EVIDENCE`, `UNTRUSTED_ISSUER`,
+`INVALID_KEY`, `INVALID_SIGNATURE`, `INVALID_HISTORY`, `MISSING_PREDECESSOR`,
+`INVALID_CONFIRMATION`, or `OPERATION_MISMATCH`. Referenced receipt verification
+may propagate existing `EvidenceError` codes unchanged. To compare actual
+before/after/result values with a referenced receipt, call the unchanged
+`verifyExecutionTransition` separately.
 
-`context.receipts` supplies untrusted receipt candidates. Referenced receipts are
-independently checked; this collection never supplies trust configuration.
-New APIs throw `LifecycleError` with `MALFORMED_EVIDENCE`, `UNTRUSTED_ISSUER`,
-`INVALID_KEY`, `INVALID_SIGNATURE`, `INVALID_HISTORY`, `INVALID_CONFIRMATION`, or
-`UNSAFE_RETRY`. Receipt verification may also propagate the existing `EvidenceError`.
-Only the retry helper deliberately converts verification errors to a conservative
-disposition. Signing checks the proposed append using the supplied verifier context;
-recipients must still verify independently with their own trusted configuration.
+### Trust, storage and orchestration limits
 
-### v0.2 limitations
+All signatures cover the complete artifact except `signature.value`, including
+signed `kind`, version, issuer, key ID, identity, observation and reference fields.
+Unknown fields fail closed. The profile is specific to this library and makes no
+claim of compatibility with a runtime protocol or an external receipt standard.
 
-Successful verification still does **not** prove:
+A successful assessment describes only supplied evidence. Every result includes
+`global_completeness_proven: false`. A valid prefix or isolated branch cannot prove
+that a later event or another branch does not exist. Repeated verification succeeds.
+Hash links do not make storage immutable or establish freshness. Applications own
+accepted-head/checkpoint storage, deduplication, concurrency, retention and ingestion
+size/depth limits. Graph checking here uses in-memory ancestry sets; large histories
+need external limits and may incur quadratic work/storage.
 
-- Physical reality, external system truth, or external provider correctness.
-- Uncompromised observation software or faithful collection of downstream evidence.
-- Provider idempotency behavior or prevention of duplicate external effects.
-- Human identity.
-- Immutable storage, a complete history, or that this is the latest evidence.
-- Globally trusted time (timestamp ordering only compares signed assertions).
-- Independent non-repudiation.
-- Atomic execution plus receipt/evidence persistence.
+Idempotency metadata is signed but does not establish provider deduplication.
+The executor must enforce appropriate scope, retention and payload consistency.
+Trusted observers/binding authorities may be mistaken or compromised. Receipt
+hashes commit to observations; they do not prove physical truth or the causality
+of a state change. Different actual effects can be hidden by identical observed
+hash tuples. Missing before/after/result observations cannot be manufactured to
+produce a v0.1 receipt; other outcome profiles remain future work.
 
-Signer identity is only as trustworthy as verifier configuration and signing-key
-custody. A compromised or dishonest trusted authority can sign false observations;
-cryptographic verification is not independent verification of downstream reality.
-The library has no persistence, replay registry, locking, provider adapters, or
-atomic submission/recording transaction. Applications own ingestion limits,
-retention, freshness, concurrency, and evidence collection. v0.2 remains a small,
-deterministic library with no integrations into neighboring conceptual layers.
+Provider adapters, retry authorization/engines, backoff, scheduling, durable
+execution registries, locking, saga/compensation and recovery after a crash belong
+to execution/orchestration. Local atomic persistence does not make an external
+side effect and its evidence recording atomic. This library provides no
+exactly-once guarantee, transparency service, key lifecycle management or general
+agent governance framework.

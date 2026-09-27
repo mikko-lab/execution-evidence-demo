@@ -2,16 +2,22 @@
 
 ## Unreleased — v0.2 lifecycle evidence
 
-- Add signed, hash-linked lifecycle observations for dispatched, confirmed,
-  indeterminate, and unknown executions without changing ExecutionReceiptV1.
-- Require verified receipt hashes and matching execution/request identities for
-  confirmation; resolve uncertainty with separately trusted signed reconciliation.
-- Separate issuer keys and evidence roles in external verifier configuration.
-- Default uncertain or missing evidence to reconciliation; permit retry only
-  for explicitly configured, identity-bound side-effect-free operations.
-- Preserve execution/request/idempotency identity in signed retry observations.
-- Document transition rules, downstream evidence requirements and trust limits.
-- Keep the package version and all existing tests and compatibility vectors unchanged.
+- Replace the earlier unreleased lifecycle draft with append-only signed
+  observations and a separate knowledge/conflict assessment API.
+- Remove retry authorization and retry policy from evidence verification.
+- Commit to actor, action/target, payload and executor/scope with a strict
+  domain-separated operation descriptor hash.
+- Distinguish logical execution IDs, delivery attempt IDs and observation IDs;
+  preserve retry ancestry without authorizing or performing retries.
+- Add separately trusted signed receipt bindings for the payload/scope/attempt
+  association absent from ExecutionReceiptV1; validate receipt actor/action too.
+- Use outcome_observed with verified binding evidence, never acknowledgement alone.
+- Accept forks, delayed observations and contradictory outcomes; report conflict
+  without overwriting evidence or using timestamp order to select a winner.
+- Distinguish missing predecessors from invalid signatures; expose supplied graph
+  heads and per-attempt knowledge without claiming completeness or freshness.
+- Keep package version, v0.1 implementation, APIs, tests and compatibility vector
+  unchanged. The previous unreleased lifecycle draft is not wire/API compatible.
 
 ## 0.1.0
 
