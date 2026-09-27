@@ -1,6 +1,6 @@
 {
   "name": "execution-evidence-demo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A reference implementation for verifiable execution evidence.",
   "private": true,
   "license": "Apache-2.0",
@@ -9,6 +9,12 @@
   },
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
