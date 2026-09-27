@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — Unreleased
+## 0.2.0
 
 - Replace the earlier unreleased lifecycle draft with append-only signed
   observations and a separate knowledge/conflict assessment API.
@@ -21,7 +21,7 @@
   expose per-attempt event/receipt/execution references without a business verdict.
 - Distinguish missing predecessors from invalid signatures; expose supplied graph
   heads and per-attempt knowledge without claiming completeness or freshness.
-- Prepare package version 0.2.0; no release has been published. Preserve the v0.1
+- Set package version to 0.2.0 for the GitHub source release. Preserve the v0.1
   receipt implementation, APIs, tests and compatibility vector unchanged. Artifact
   `version: 1` fields identify schemas, not the package version. The previous
   unreleased lifecycle draft is not wire/API compatible.

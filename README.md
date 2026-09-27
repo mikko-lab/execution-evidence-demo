@@ -36,7 +36,7 @@ publication; the repository and its Apache-2.0 source remain public.
 
 ## Try the local tarball
 
-This is an unreleased v0.2.0 candidate, not an npm registry release. With locked
+Version 0.2.0 is a GitHub source release, not an npm registry release. With locked
 repository dependencies installed (`npm ci`), run from the repository root:
 
 ```sh
@@ -204,15 +204,15 @@ mismatches, detached copies, and explicit replay behavior.
 
 Licensed under [Apache-2.0](LICENSE).
 
-## v0.2.0 candidate (unreleased): append-only execution observations
+## v0.2.0: append-only execution observations
 
-This v0.2.0 candidate revises the earlier **unreleased** lifecycle draft incompatibly.
+Version 0.2.0 revises the earlier **unreleased** lifecycle draft incompatibly.
 The earlier lifecycle `execution_id` is replaced by `operation_id`; v0.1
 `execution_id` continues to identify an actual execution. The earlier `confirmed`,
 `ExecutionReconciliationV1`, `retryPolicy`,
 `evaluateRetryDisposition`, and `signRetryDispatch` APIs are removed. Do not mix
 artifacts from the two drafts. No released lifecycle compatibility is claimed.
-Package version 0.2.0 is prepared locally and remains unreleased. The v0.1
+Package version 0.2.0 is separate from the evidence schema versions. The v0.1
 `ExecutionReceiptV1` schema is unchanged; its `version: 1` and the new lifecycle
 artifact `version: 1` fields identify schemas, not the package version.
 
