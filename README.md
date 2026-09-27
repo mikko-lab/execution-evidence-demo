@@ -34,6 +34,32 @@ corresponding warning. The library itself uses standard Node crypto APIs.
 Dependencies are pinned in the lockfile. `private: true` prevents accidental npm
 publication; the repository and its Apache-2.0 source remain public.
 
+## Try the local tarball
+
+This is an unreleased v0.2.0 candidate, not an npm registry release. With locked
+repository dependencies installed (`npm ci`), run from the repository root:
+
+```sh
+package_dir="$(mktemp -d)"
+npm run build
+npm pack --pack-destination "$package_dir"
+mkdir "$package_dir/consumer"
+cd "$package_dir/consumer"
+npm init -y
+npm install "$package_dir/execution-evidence-demo-0.2.0.tgz"
+node --input-type=module -e "import { hashState } from 'execution-evidence-demo'; console.log(hashState({ counter: 0 }));"
+```
+
+The final command prints an observation hash. To use either JavaScript example
+below in this consumer, replace `./dist/src/index.js` with
+`execution-evidence-demo` and run it as an ES module (`.mjs`). TypeScript consumers
+can import the same package name; declarations are included. Node type declarations
+(`@types/node`) are needed for the public Node crypto types.
+
+The tarball includes `dist/src`, package metadata, README, LICENSE and CHANGELOG.
+Source tests, compiled tests and development configuration stay out of the package.
+Building before packing is required. `private: true` remains enabled.
+
 ## Continuous integration
 
 GitHub Actions runs `npm ci` and `npm run verify` on Node.js 22 and 24 for
@@ -178,16 +204,17 @@ mismatches, detached copies, and explicit replay behavior.
 
 Licensed under [Apache-2.0](LICENSE).
 
-## Unreleased v0.2: append-only execution observations
+## v0.2.0 candidate (unreleased): append-only execution observations
 
-This branch revises the earlier **unreleased** lifecycle draft incompatibly.
+This v0.2.0 candidate revises the earlier **unreleased** lifecycle draft incompatibly.
 The earlier lifecycle `execution_id` is replaced by `operation_id`; v0.1
 `execution_id` continues to identify an actual execution. The earlier `confirmed`,
 `ExecutionReconciliationV1`, `retryPolicy`,
 `evaluateRetryDisposition`, and `signRetryDispatch` APIs are removed. Do not mix
 artifacts from the two drafts. No released lifecycle compatibility is claimed.
-Package version remains 0.1.0 until a separately reviewed release; artifact
-`version: 1` identifies each new schema, not the package version.
+Package version 0.2.0 is prepared locally and remains unreleased. The v0.1
+`ExecutionReceiptV1` schema is unchanged; its `version: 1` and the new lifecycle
+artifact `version: 1` fields identify schemas, not the package version.
 
 `ExecutionReceiptV1`, its APIs, error semantics, canonical bytes, and fixed
 external compatibility vector remain unchanged. Missing observations are not

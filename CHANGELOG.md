@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — v0.2 lifecycle evidence
+## 0.2.0 — Unreleased
 
 - Replace the earlier unreleased lifecycle draft with append-only signed
   observations and a separate knowledge/conflict assessment API.
@@ -21,8 +21,12 @@
   expose per-attempt event/receipt/execution references without a business verdict.
 - Distinguish missing predecessors from invalid signatures; expose supplied graph
   heads and per-attempt knowledge without claiming completeness or freshness.
-- Keep package version, v0.1 implementation, APIs, tests and compatibility vector
-  unchanged. The previous unreleased lifecycle draft is not wire/API compatible.
+- Prepare package version 0.2.0; no release has been published. Preserve the v0.1
+  receipt implementation, APIs, tests and compatibility vector unchanged. Artifact
+  `version: 1` fields identify schemas, not the package version. The previous
+  unreleased lifecycle draft is not wire/API compatible.
+- Limit the package to runtime JavaScript, TypeScript declarations, package metadata,
+  README, license and changelog; exclude source/tests and development configuration.
 
 ## 0.1.0
 
