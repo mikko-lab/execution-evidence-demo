@@ -199,3 +199,6 @@ export function verifyExecutionTransition(
   if (hashResult(result) !== copy.result_hash) fail('RESULT_MISMATCH', 'Result does not match');
   return true;
 }
+
+// v0.2 lifecycle evidence is additive; the v0.1 receipt contract above is unchanged.
+export * from './lifecycle.js';
