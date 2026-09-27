@@ -15,12 +15,12 @@ export const operation: OperationDescriptorV1 = {
   actor: { type: 'service', id: 'record-worker' }, action: { type: 'update_record', target: 'record-1' },
   payload: { revision: 1 }, executor: { id: 'record-api', scope: 'account-1' },
 };
-export const identity = { execution_id: randomUUID(), request_id: 'request-1', operation_hash: hashOperation(operation) };
+export const identity = { operation_id: randomUUID(), request_id: 'request-1', operation_hash: hashOperation(operation) };
 export const attemptId = randomUUID();
 export const time = '2026-09-27T12:00:00.000Z';
-export function makeReceipt(after = { revision: 1 }, result: unknown = { applied: true }): ExecutionReceiptV1 {
+export function makeReceipt(after = { revision: 1 }, result: unknown = { applied: true }, before = { revision: 0 }): ExecutionReceiptV1 {
   return signExecutionReceipt(createExecutionReceipt({
-    ...identity, actor: operation.actor, action: operation.action, before: { revision: 0 }, after, result,
+    execution_id: randomUUID(), request_id: identity.request_id, actor: operation.actor, action: operation.action, before, after, result,
     executed_at: time, key_id: 'provider-key',
   }), provider.privateKey);
 }
@@ -30,7 +30,8 @@ export const context: VerificationContext = {
   trustedIssuers: [
     { issuer_id: 'observer', key_id: 'observer-key', public_key: observer.publicKey, roles: ['lifecycle'] },
     { issuer_id: 'provider', key_id: 'provider-key', public_key: provider.publicKey, roles: ['receipt'] },
-    { issuer_id: 'adapter', key_id: 'adapter-key', public_key: adapter.publicKey, roles: ['receipt_binding'] },
+    { issuer_id: 'adapter', key_id: 'adapter-key', public_key: adapter.publicKey, roles: ['receipt_binding'],
+      binding_scope: { executor_id: operation.executor.id, scope: operation.executor.scope } },
   ],
   receipts: [receipt],
 };

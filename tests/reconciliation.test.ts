@@ -122,7 +122,7 @@ describe('execution identity, delivery attempts and policy independence', () => 
     expect(history.map(hashLifecycleEvidence)).toEqual(before);
     const assessment = assessHistory([...history, retry], context);
     expect(assessment.attempts).toEqual(expect.arrayContaining([
-      { attempt_id: attemptId, state: 'indeterminate' }, { attempt_id: nextAttempt, state: 'dispatched' },
+      expect.objectContaining({ attempt_id: attemptId, state: 'indeterminate' }), expect.objectContaining({ attempt_id: nextAttempt, state: 'dispatched' }),
     ]));
   });
   test('current retry-policy values never affect historical evidence verification or assessment', () => {
@@ -142,7 +142,7 @@ describe('execution identity, delivery attempts and policy independence', () => 
     const history = uncertain();
     for (const patch of [{ attempt_id: randomUUID() }, { retry_of_attempt_id: attemptId },
       { attempt_id: randomUUID(), retry_of_attempt_id: randomUUID() },
-      { execution_id: randomUUID(), attempt_id: randomUUID(), retry_of_attempt_id: attemptId },
+      { operation_id: randomUUID(), attempt_id: randomUUID(), retry_of_attempt_id: attemptId },
       { request_id: 'other', attempt_id: randomUUID(), retry_of_attempt_id: attemptId }]) {
       expect(() => append(history, patch)).toThrow();
     }
@@ -165,7 +165,7 @@ describe('execution identity, delivery attempts and policy independence', () => 
     const assessment = assessHistory(history, ctx);
     expect(assessment.state).toBe('outcome_observed');
     expect(assessment.attempts).toEqual(expect.arrayContaining([
-      { attempt_id: attemptId, state: 'outcome_observed' }, { attempt_id: next, state: 'dispatched' },
+      expect.objectContaining({ attempt_id: attemptId, state: 'outcome_observed' }), expect.objectContaining({ attempt_id: next, state: 'dispatched' }),
     ]));
   });
 });
@@ -202,5 +202,70 @@ describe('structural verification is separate from assessment', () => {
       receipt_binding_hash: hashReceiptBinding(ctx.receiptBindings[0]!) } as UnsignedExecutionLifecycleEventV1,
     observer.privateKey, [], ctx);
     expect(assessHistory([root], ctx)).toMatchObject({ state: 'outcome_observed', global_completeness_proven: false });
+  });
+});
+
+describe('attempt-local outcomes and conflicts', () => {
+  function twoAttemptOutcomes(secondReceipt = makeReceipt({ revision: 1 }, { applied: true })) {
+    const history = uncertain();
+    const secondId = randomUUID();
+    history.push(append(history, { attempt_id: secondId, retry_of_attempt_id: attemptId }));
+    const firstContext = outcomeContext(makeReceipt({ revision: 0 }, { applied: false, reason: 'rejected' }));
+    const secondContext = outcomeContext(secondReceipt, secondId);
+    const ctx = { ...context, receipts: [...firstContext.receipts, ...secondContext.receipts],
+      receiptBindings: [...firstContext.receiptBindings, ...secondContext.receiptBindings] };
+    const firstOutcome = observed(history, { ...ctx, receiptBindings: [firstContext.receiptBindings[0]!, ...secondContext.receiptBindings] });
+    history.push(firstOutcome);
+    const secondOutcome = observed(history, { ...ctx, receiptBindings: [secondContext.receiptBindings[0]!, ...firstContext.receiptBindings] },
+      { attempt_id: secondId, retry_of_attempt_id: attemptId });
+    history.push(secondOutcome);
+    return { history, ctx, firstOutcome, secondOutcome, secondId, firstContext, secondContext };
+  }
+  test('rejected and applied outcomes from different attempts are not an evidence conflict', () => {
+    const { history, ctx, firstOutcome, secondOutcome, secondId, firstContext, secondContext } = twoAttemptOutcomes();
+    expect(firstContext.receipts[0]!.execution_id).not.toBe(secondContext.receipts[0]!.execution_id);
+    expect(firstOutcome.operation_id).toBe(secondOutcome.operation_id);
+    expect(verifyExecutionHistory(history, ctx)).toBe(true);
+    const assessment = assessHistory(history, ctx);
+    expect(assessment.state).toBe('outcome_observed');
+    expect(assessment.conflicting_event_ids).toEqual([]);
+    expect(assessment.outcome_attempt_ids).toEqual([attemptId, secondId].sort());
+    expect(assessment.attempts).toEqual(expect.arrayContaining([
+      { attempt_id: attemptId, state: 'outcome_observed', outcomes: [{ event_id: firstOutcome.event_id,
+        execution_id: firstContext.receipts[0]!.execution_id, receipt_hash: api.hashExecutionReceipt(firstContext.receipts[0]!) }] },
+      { attempt_id: secondId, state: 'outcome_observed', outcomes: [{ event_id: secondOutcome.event_id,
+        execution_id: secondContext.receipts[0]!.execution_id, receipt_hash: api.hashExecutionReceipt(secondContext.receipts[0]!) }] },
+    ]));
+    expect(assessHistory([...history].reverse(), ctx)).toEqual(assessment);
+  });
+  test('two attempts with actual effects retain separate v0.1 execution identities', () => {
+    const firstReceipt = makeReceipt({ revision: 1 });
+    const secondReceipt = makeReceipt({ revision: 2 }, { applied: true }, { revision: 1 });
+    const history = uncertain(), next = randomUUID();
+    history.push(append(history, { attempt_id: next, retry_of_attempt_id: attemptId }));
+    const a = outcomeContext(firstReceipt), b = outcomeContext(secondReceipt, next);
+    const ctx = { ...context, receipts: [firstReceipt, secondReceipt], receiptBindings: [...a.receiptBindings, ...b.receiptBindings] };
+    history.push(observed(history, ctx));
+    history.push(observed(history, { ...ctx, receiptBindings: [...b.receiptBindings, ...a.receiptBindings] },
+      { attempt_id: next, retry_of_attempt_id: attemptId }));
+    const assessment = assessHistory(history, ctx);
+    expect(assessment.state).toBe('outcome_observed');
+    expect(new Set(assessment.attempts.flatMap(a => a.outcomes.map(o => o.execution_id))).size).toBe(2);
+    expect(assessment.outcome_attempt_ids).toHaveLength(2);
+  });
+  test('an attempt-local conflict is preserved without accusing outcomes from other attempts', () => {
+    const { history, ctx, firstOutcome, secondOutcome, secondId } = twoAttemptOutcomes();
+    const contradictory = outcomeContext(makeReceipt({ revision: 9 }), attemptId);
+    const combined = { ...ctx, receipts: [...ctx.receipts, ...contradictory.receipts],
+      receiptBindings: [...contradictory.receiptBindings, ...ctx.receiptBindings] };
+    const contradiction = observed(history, combined);
+    history.push(contradiction);
+    const assessment = assessHistory(history, combined);
+    expect(assessment.state).toBe('conflict');
+    expect(assessment.conflicting_event_ids).toEqual([firstOutcome.event_id, contradiction.event_id].sort());
+    expect(assessment.conflicting_event_ids).not.toContain(secondOutcome.event_id);
+    expect(assessment.attempts.find(a => a.attempt_id === secondId)!.state).toBe('outcome_observed');
+    expect(assessment.attempts.find(a => a.attempt_id === attemptId)!.outcomes).toHaveLength(2);
+    expect(assessHistory([...history].reverse(), combined)).toEqual(assessment);
   });
 });

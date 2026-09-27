@@ -49,7 +49,7 @@ describe('signed observation artifacts', () => {
   });
   test.each<[string, (r: any) => void]>([
     ['status and basis', r => { r.status = 'unknown'; r.basis = 'insufficient_trustworthy_evidence'; }],
-    ['execution', r => { r.execution_id = randomUUID(); }], ['request', r => { r.request_id = 'other'; }],
+    ['logical operation', r => { r.operation_id = randomUUID(); }], ['request', r => { r.request_id = 'other'; }],
     ['attempt', r => { r.attempt_id = randomUUID(); }], ['operation', r => { r.operation_hash = '0'.repeat(64); }],
     ['event', r => { r.event_id = randomUUID(); }], ['time', r => { r.observed_at = '2026-09-27T12:00:01.000Z'; }],
     ['idempotency', r => { r.idempotency_key = 'other'; }], ['signature', r => { r.signature.value = Buffer.alloc(64).toString('base64'); }],
@@ -137,7 +137,7 @@ describe('receipt-to-operation binding', () => {
     code(() => verifyEvidence(forged, ctx), 'INVALID_SIGNATURE');
   });
   test('binding identity, descriptor, receipt actor/action and signatures are checked independently', () => {
-    for (const patch of [{ execution_id: randomUUID() }, { request_id: 'other' },
+    for (const patch of [{ request_id: 'other' },
       { actor: { ...operation.actor, id: 'other' } }, { action: { ...operation.action, target: 'other' } },
       { action: { ...operation.action, type: 'delete_record' } }]) {
       const r = rawSign({ ...receipt, ...patch }, provider.privateKey);
@@ -163,5 +163,74 @@ describe('receipt-to-operation binding', () => {
     code(() => verifyEvidence(ctx.receiptBindings[0], noReceiptRole), 'UNTRUSTED_ISSUER');
     const embedded = rawSign({ ...ctx.receiptBindings[0], public_key: 'self-asserted' }, adapter.privateKey);
     code(() => verifyEvidence(embedded, ctx), 'MALFORMED_EVIDENCE');
+  });
+});
+
+describe('logical operation to actual execution binding', () => {
+  test('a different valid v0.1 execution ID is accepted through its own signed binding', () => {
+    const replacement = rawSign({ ...receipt, execution_id: randomUUID() }, provider.privateKey);
+    expect(replacement.execution_id).not.toBe(receipt.execution_id);
+    const ctx = outcomeContext(replacement), history = uncertain();
+    const event = observed(history, ctx);
+    expect(event).not.toHaveProperty('execution_id');
+    expect(ctx.receiptBindings[0]).not.toHaveProperty('execution_id');
+    expect(event.operation_id).toBe(ctx.receiptBindings[0]!.operation_id);
+    expect(event.operation_id).not.toBe(replacement.execution_id);
+    expect(verifyExecutionHistory([...history, event], ctx)).toBe(true);
+  });
+  test('changing a receipt execution ID without renewing the signed binding is rejected', () => {
+    const ctx = outcomeContext(), history = uncertain(), event = observed(history, ctx);
+    const replacement = rawSign({ ...receipt, execution_id: randomUUID() }, provider.privateKey);
+    code(() => verifyExecutionHistory([...history, event], { ...ctx, receipts: [replacement] }), 'INVALID_CONFIRMATION');
+  });
+  test.each(['operation_id', 'attempt_id'] as const)('a genuine binding for a different %s cannot confirm this observation', field => {
+    const binding = signExecutionReceiptBinding({ ...bindingDraft(), [field]: randomUUID() }, adapter.privateKey, context);
+    expect(verifyEvidence(binding, context)).toBe(true);
+    code(() => observed(uncertain(), { ...context, receipts: [receipt], receiptBindings: [binding] }), 'INVALID_CONFIRMATION');
+  });
+  test('the superseded lifecycle execution_id field is not silently interpreted as operation_id', () => {
+    const old: any = { ...draft(), execution_id: randomUUID() };
+    delete old.operation_id;
+    code(() => verifyEvidence(rawSign(old), context), 'MALFORMED_EVIDENCE');
+  });
+});
+
+describe('binding authority executor and tenant boundary', () => {
+  test.each([
+    undefined, {}, { executor_id: 'record-api' }, { scope: 'account-1' },
+    { executor_id: 'other-api', scope: 'account-1' },
+    { executor_id: 'record-api', scope: 'other-account' },
+    { executor_id: '*', scope: 'account-1' }, { executor_id: 'record-api', scope: '*' },
+    { executor_id: '', scope: 'account-1' },
+    { executor_id: 'record-api', scope: 'account-1', extra: true },
+  ])('missing, malformed or mismatched binding grant fails closed: %j', binding_scope => {
+    const ctx = outcomeContext();
+    const trustedIssuers = ctx.trustedIssuers.map(k => k.issuer_id === 'adapter' ? { ...k, binding_scope } : k);
+    const wrongContext = { ...ctx, trustedIssuers } as unknown as typeof ctx;
+    code(() => verifyEvidence(ctx.receiptBindings[0], wrongContext), 'UNTRUSTED_ISSUER');
+    code(() => signExecutionReceiptBinding(bindingDraft(), adapter.privateKey, wrongContext), 'UNTRUSTED_ISSUER');
+    const history = uncertain(), event = observed(history, ctx);
+    code(() => verifyExecutionHistory([...history, event], wrongContext), 'UNTRUSTED_ISSUER');
+  });
+  test.each([
+    { id: 'other-api', scope: 'account-1' },
+    { id: 'record-api', scope: 'other-account' },
+  ])('a correctly signed descriptor substitution cannot expand the configured binding scope: %j', executor => {
+    const foreignOperation = { ...operation, executor };
+    const foreignBinding = rawSign({ ...bindingDraft(), operation_hash: hashOperation(foreignOperation) }, adapter.privateKey);
+    // Matching operation_hash and valid signature are insufficient: the external scope grant still applies.
+    code(() => verifyEvidence(foreignBinding, { ...context, operation: foreignOperation }), 'UNTRUSTED_ISSUER');
+    const explicitlyScoped = { ...context, operation: foreignOperation, trustedIssuers: context.trustedIssuers.map(k =>
+      k.issuer_id === 'adapter' ? { ...k, binding_scope: { executor_id: executor.id, scope: executor.scope } } : k) };
+    expect(verifyEvidence(foreignBinding, explicitlyScoped)).toBe(true);
+  });
+  test('a self-declared grant in binding evidence cannot supply verifier authority', () => {
+    const injected = rawSign({ ...bindingDraft(), binding_scope: { executor_id: 'record-api', scope: 'account-1' } }, adapter.privateKey);
+    code(() => verifyEvidence(injected, context), 'MALFORMED_EVIDENCE');
+  });
+  test('duplicate issuer/key configuration is rejected even if one scope matches', () => {
+    const ctx = outcomeContext(), issuer = ctx.trustedIssuers.find(k => k.issuer_id === 'adapter')!;
+    const duplicate = { ...issuer, binding_scope: { executor_id: 'other-api', scope: 'other-account' } };
+    code(() => verifyEvidence(ctx.receiptBindings[0], { ...ctx, trustedIssuers: [...ctx.trustedIssuers, duplicate] }), 'UNTRUSTED_ISSUER');
   });
 });

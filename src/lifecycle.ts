@@ -30,6 +30,8 @@ export interface TrustedIssuer {
   key_id: string;
   public_key: KeyObject;
   roles: readonly EvidenceRole[];
+  /** Required for receipt_binding; an exact executor/scope pair, with no wildcard grants. */
+  binding_scope?: { executor_id: string; scope: string };
 }
 
 export interface VerificationContext {
@@ -41,13 +43,13 @@ export interface VerificationContext {
   receiptBindings?: readonly unknown[];
 }
 
-export interface ExecutionIdentity {
-  execution_id: string;
+export interface OperationIdentity {
+  operation_id: string;
   request_id: string;
   operation_hash: string;
 }
 
-type Metadata = ExecutionIdentity & {
+type Metadata = OperationIdentity & {
   version: 1;
   attempt_id: string;
   observed_at: string;
@@ -144,7 +146,7 @@ function artifactSnapshot(value: unknown, signed: boolean): Draft | Artifact {
   const r = object(snapshot(value));
   const binding = r.kind === 'execution_receipt_binding';
   if (!binding && r.kind !== 'execution_lifecycle') fail('MALFORMED_EVIDENCE', 'Unknown evidence kind');
-  const required = ['kind', 'version', 'execution_id', 'request_id', 'operation_hash', 'attempt_id',
+  const required = ['kind', 'version', 'operation_id', 'request_id', 'operation_hash', 'attempt_id',
     'observed_at', 'issuer', 'signature'];
   if (binding) required.push('binding_id', 'execution_receipt_hash', 'receipt_issuer');
   else {
@@ -154,7 +156,7 @@ function artifactSnapshot(value: unknown, signed: boolean): Draft | Artifact {
   fields(r, required, binding ? [] : ['previous_event_hash', 'retry_of_attempt_id', 'idempotency_key']);
   const s = object(r.signature);
   fields(s, signed ? ['algorithm', 'key_id', 'value'] : ['algorithm', 'key_id']);
-  if (r.version !== 1 || !uuid(r.execution_id) || !uuid(r.attempt_id) || !uuid(r[binding ? 'binding_id' : 'event_id'])
+  if (r.version !== 1 || !uuid(r.operation_id) || !uuid(r.attempt_id) || !uuid(r[binding ? 'binding_id' : 'event_id'])
       || !text(r.request_id) || !hash(r.operation_hash) || !text(r.issuer) || !text(s.key_id)
       || s.algorithm !== 'Ed25519' || !timestamp(r.observed_at)) fail('MALFORMED_EVIDENCE', 'Invalid evidence metadata');
   if (binding) {
@@ -186,6 +188,20 @@ function requireKey(key: KeyObject, type: 'public' | 'private'): void {
 function authority(context: VerificationContext, issuer: string, keyId: string, role: EvidenceRole): TrustedIssuer {
   const matches = context.trustedIssuers.filter(k => k.issuer_id === issuer && k.key_id === keyId);
   if (matches.length !== 1 || !matches[0]!.roles.includes(role)) fail('UNTRUSTED_ISSUER', 'Issuer/key must be uniquely trusted for this role');
+  if (role === 'receipt_binding') {
+    let scope: Record<string, unknown>;
+    try {
+      scope = object(snapshot(matches[0]!.binding_scope));
+      fields(scope, ['executor_id', 'scope']);
+    } catch {
+      return fail('UNTRUSTED_ISSUER', 'Binding authority requires an explicit executor/scope grant');
+    }
+    const executor = operationSnapshot(context.operation).executor;
+    if (!text(scope.executor_id) || !text(scope.scope) || scope.executor_id === '*' || scope.scope === '*'
+        || scope.executor_id !== executor.id || scope.scope !== executor.scope) {
+      fail('UNTRUSTED_ISSUER', 'Binding authority is not trusted for this executor/scope');
+    }
+  }
   requireKey(matches[0]!.public_key, 'public');
   return matches[0]!;
 }
@@ -199,11 +215,11 @@ function authenticated(value: unknown, context: VerificationContext): Artifact {
   }
   return copy;
 }
-function checkOperation(e: ExecutionIdentity, operation: OperationDescriptorV1): void {
+function checkOperation(e: OperationIdentity, operation: OperationDescriptorV1): void {
   if (e.operation_hash !== hashOperation(operation)) fail('OPERATION_MISMATCH', 'Evidence does not bind the expected operation descriptor');
 }
-function sameExecution(a: ExecutionIdentity, b: ExecutionIdentity): boolean {
-  return a.execution_id === b.execution_id && a.request_id === b.request_id && a.operation_hash === b.operation_hash;
+function sameOperation(a: OperationIdentity, b: OperationIdentity): boolean {
+  return a.operation_id === b.operation_id && a.request_id === b.request_id && a.operation_hash === b.operation_hash;
 }
 function candidate(values: readonly unknown[] | undefined, digest: string): unknown {
   const copies = (values ?? []).map(snapshot);
@@ -220,10 +236,11 @@ function boundReceipt(binding: ExecutionReceiptBindingV1, context: VerificationC
   if (!text(signature.key_id)) fail('INVALID_CONFIRMATION', 'Receipt has no key identity');
   const key = authority(context, binding.receipt_issuer, signature.key_id, 'receipt');
   verifyExecutionReceipt(receipt, { keyId: key.key_id, publicKey: key.public_key });
-  if (receipt.execution_id !== binding.execution_id || receipt.request_id !== binding.request_id
+  if (receipt.request_id !== binding.request_id
       || hashState(receipt.actor) !== hashState(operation.actor) || hashState(receipt.action) !== hashState(operation.action)) {
     fail('INVALID_CONFIRMATION', 'Receipt identity, actor or action does not match the bound operation');
   }
+  // The signed full-receipt hash binds its execution_id; it need not equal the logical operation_id.
   // v0.1 has no payload/scope/attempt fields: that association is the binding authority's signed claim.
   return receipt as unknown as ExecutionReceiptV1;
 }
@@ -231,7 +248,7 @@ function boundReceipt(binding: ExecutionReceiptBindingV1, context: VerificationC
 function outcome(event: ExecutionLifecycleEventV1, context: VerificationContext): ExecutionReceiptV1 | undefined {
   if (event.status !== 'outcome_observed') return undefined;
   const binding = authenticated(candidate(context.receiptBindings, event.receipt_binding_hash), context);
-  if (binding.kind !== 'execution_receipt_binding' || !sameExecution(binding, event) || binding.attempt_id !== event.attempt_id) {
+  if (binding.kind !== 'execution_receipt_binding' || !sameOperation(binding, event) || binding.attempt_id !== event.attempt_id) {
     fail('INVALID_CONFIRMATION', 'Receipt binding does not identify this operation and attempt');
   }
   return boundReceipt(binding, context);
@@ -283,7 +300,7 @@ function verifiedHistory(history: unknown, context: VerificationContext): Verifi
   const outcomes = new Map<string, ExecutionReceiptV1>();
   for (const e of events) {
     checkOperation(e, context.operation);
-    if (!sameExecution(first, e) || first.idempotency_key !== e.idempotency_key) fail('INVALID_HISTORY', 'Changed execution identity');
+    if (!sameOperation(first, e) || first.idempotency_key !== e.idempotency_key) fail('INVALID_HISTORY', 'Changed logical operation identity');
     if (ids.has(e.event_id)) fail('INVALID_HISTORY', 'Repeated event identifier');
     ids.add(e.event_id);
     if (attempts.has(e.attempt_id) && attempts.get(e.attempt_id) !== e.retry_of_attempt_id) fail('INVALID_HISTORY', 'Changed attempt identity');
@@ -337,17 +354,27 @@ export function verifyExecutionHistory(history: unknown, context: VerificationCo
 }
 
 export type KnowledgeState = LifecycleStatus | 'conflict';
+export interface AttemptAssessment {
+  attempt_id: string;
+  state: KnowledgeState;
+  /** Each supplied outcome remains attributable to its event and actual v0.1 execution. */
+  outcomes: Array<{ event_id: string; execution_id: string; receipt_hash: string }>;
+}
+
 export interface HistoryAssessment {
   state: KnowledgeState;
   /** False by construction: a supplied graph cannot prove there is no withheld evidence. */
   global_completeness_proven: false;
   heads: string[];
-  attempts: Array<{ attempt_id: string; state: KnowledgeState }>;
+  attempts: AttemptAssessment[];
+  /** Informational only; multiple outcome attempts do not imply business success or duplicate effects. */
+  outcome_attempt_ids: string[];
   outcome_receipt_hashes: string[];
   conflicting_event_ids: string[];
 }
 
-function projection(events: ExecutionLifecycleEventV1[], outcomes: Map<string, ExecutionReceiptV1>): KnowledgeState {
+/** Compare final-outcome claims only within one delivery attempt. */
+function attemptProjection(events: ExecutionLifecycleEventV1[], outcomes: Map<string, ExecutionReceiptV1>): KnowledgeState {
   const fingerprints = new Set(events.flatMap(e => {
     const r = outcomes.get(e.event_id);
     return r ? [hashState({ state_before_hash: r.state_before_hash, state_after_hash: r.state_after_hash, result_hash: r.result_hash })] : [];
@@ -362,13 +389,26 @@ function projection(events: ExecutionLifecycleEventV1[], outcomes: Map<string, E
 /** Assess authenticated supplied evidence. Invalid/incomplete input throws, never becomes an outcome. */
 export function assessHistory(history: unknown, context: VerificationContext): HistoryAssessment {
   const { events, outcomes, heads } = verifiedHistory(history, context);
-  const state = projection(events, outcomes);
   const attemptIds = [...new Set(events.map(e => e.attempt_id))].sort();
+  const attempts: AttemptAssessment[] = attemptIds.map(attempt_id => {
+    const observations = events.filter(e => e.attempt_id === attempt_id);
+    return {
+      attempt_id, state: attemptProjection(observations, outcomes),
+      outcomes: observations.flatMap(e => {
+        const receipt = outcomes.get(e.event_id);
+        return receipt ? [{ event_id: e.event_id, execution_id: receipt.execution_id,
+          receipt_hash: hashExecutionReceipt(receipt) }] : [];
+      }).sort((a, b) => a.event_id < b.event_id ? -1 : a.event_id > b.event_id ? 1 : 0),
+    };
+  });
+  // Aggregate knowledge only. Never compare fingerprints across delivery attempts or choose a business winner.
+  const state = (['conflict', 'outcome_observed', 'indeterminate', 'dispatched', 'unknown'] as const)
+    .find(candidate => attempts.some(a => a.state === candidate))!;
   return {
     state, global_completeness_proven: false, heads,
-    attempts: attemptIds.map(attempt_id => ({ attempt_id, state: projection(events.filter(e => e.attempt_id === attempt_id), outcomes) })),
+    attempts, outcome_attempt_ids: attempts.filter(a => a.outcomes.length > 0).map(a => a.attempt_id),
     outcome_receipt_hashes: [...new Set([...outcomes.values()].map(hashExecutionReceipt))].sort(),
-    conflicting_event_ids: state === 'conflict' ? [...outcomes.keys()].sort() : [],
+    conflicting_event_ids: attempts.filter(a => a.state === 'conflict').flatMap(a => a.outcomes.map(o => o.event_id)).sort(),
   };
 }
 
