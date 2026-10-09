@@ -33,5 +33,9 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
+      - name: Report native and compatibility compiler versions
+        run: |
+          npm exec -- tsc --version
+          npm exec -- tsc6 --version
       - name: Verify types, tests, and build
         run: npm run verify
