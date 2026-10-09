@@ -34,6 +34,21 @@ corresponding warning. The library itself uses standard Node crypto APIs.
 Dependencies are pinned in the lockfile. `private: true` prevents accidental npm
 publication; the repository and its Apache-2.0 source remain public.
 
+### TypeScript compiler compatibility
+
+Type checking and builds use TypeScript 7.0.2 via the pinned
+`@typescript/native` npm alias (`tsc`). Jest keeps `ts-jest@29.4.14` and uses
+`typescript@npm:@typescript/typescript6@6.0.2`, the official compatibility
+package (`tsc6` reports 6.0.3). TypeScript 7 does not expose the JavaScript
+compiler API required by ts-jest; installing it directly as `typescript` fails
+npm's peer dependency checks.
+
+This is the [ts-jest supported side-by-side setup](https://github.com/kulshekhar/ts-jest/pull/5386).
+The native TypeScript 7 check in `npm run verify` remains authoritative; Jest's
+transform diagnostics come from TypeScript 6. Both aliases are pinned and
+installed with ordinary `npm ci`, without peer dependency overrides. Source,
+receipt/lifecycle contracts, fixtures, and Jest configuration are unchanged.
+
 ## Try the local tarball
 
 Version 0.2.0 is a GitHub source release, not an npm registry release. With locked
